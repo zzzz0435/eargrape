@@ -499,12 +499,13 @@ class EargrapeApp:
         combo_state = "disabled" if running else "readonly"
         scalar_state = "disabled" if (running or self._capturing_hotkey) else "normal"
 
-        self.start_button.config(state="disabled" if running else "normal")
+        blocked = running or self._capturing_hotkey
+        self.start_button.config(state="disabled" if blocked else "normal")
         self.stop_button.config(state="normal" if running else "disabled")
         self.toggle_button.config(state="normal" if running else "disabled")
-        self.save_button.config(state="disabled" if running else "normal")
-        self.validate_button.config(state="disabled" if running else "normal")
-        self.refresh_button.config(state="disabled" if running else "normal")
+        self.save_button.config(state="disabled" if blocked else "normal")
+        self.validate_button.config(state="disabled" if blocked else "normal")
+        self.refresh_button.config(state="disabled" if blocked else "normal")
 
         self.input_combo.config(state=combo_state)
         self.output_combo.config(state=combo_state)
