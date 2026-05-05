@@ -30,7 +30,6 @@ exe = EXE(
     a.datas,
     [],
     name="Eargrape",
-    icon="icon.png" if os.path.exists("icon.png") else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
