@@ -1,0 +1,17 @@
+{
+  "input_device": null,
+  "output_device": "CABLE Input",
+  "hostapi": "Windows WASAPI",
+  "samplerate": 48000,
+  "blocksize": 128,
+  "latency": "low",
+  "exclusive_wasapi": false,
+  "hotkey": "f8",
+  "start_enabled": false,
+  "distortion_mode": "soft_clip",
+  "drive": 18.0,
+  "post_gain": 0.32,
+  "mix": 1.0,
+  "noise_gate": 0.0
+}
+
