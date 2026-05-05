@@ -3,7 +3,10 @@
 from PyInstaller.utils.hooks import collect_data_files
 
 
+import os
 datas = collect_data_files("_sounddevice_data")
+if os.path.exists("icon.png"):
+    datas += [("icon.png", ".")]
 
 a = Analysis(
     ["eargrape_gui.py"],

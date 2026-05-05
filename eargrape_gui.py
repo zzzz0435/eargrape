@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import queue
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+import keyboard
 
 from eargrape_core import (
     AppConfig,
@@ -16,6 +19,7 @@ from eargrape_core import (
     enumerate_devices,
     filter_devices,
     load_config,
+    runtime_base_dir,
     save_config,
     validate_runtime,
 )
@@ -37,6 +41,8 @@ class EargrapeApp:
         self.output_device_map: dict[str, int] = {}
         self.preferred_input_spec: str | int | None = None
         self.preferred_output_spec: str | int | None = None
+
+        self._capturing_hotkey = False
 
         self.status_var = tk.StringVar(value="Idle")
         self.effect_var = tk.StringVar(value="OFF")
@@ -112,10 +118,18 @@ class EargrapeApp:
 
         row += 1
         self._add_label(container, row, "Hotkey")
-        self.hotkey_entry = ttk.Entry(container, textvariable=self.hotkey_var)
-        self.hotkey_entry.grid(row=row, column=1, sticky="ew", pady=4)
-        hotkey_hint = ttk.Label(container, text="Example: f8 or ctrl+shift+z")
-        hotkey_hint.grid(row=row, column=2, sticky="w", padx=(12, 0))
+        hotkey_frame = ttk.Frame(container)
+        hotkey_frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        hotkey_frame.columnconfigure(0, weight=1)
+        self.hotkey_entry = ttk.Entry(hotkey_frame, textvariable=self.hotkey_var)
+        self.hotkey_entry.grid(row=0, column=0, sticky="ew")
+        self.capture_button = ttk.Button(
+            hotkey_frame,
+            text="Record",
+            command=self.start_hotkey_capture,
+            width=10,
+        )
+        self.capture_button.grid(row=0, column=1, padx=(8, 0))
 
         row += 1
         self._add_label(container, row, "Distortion")
@@ -468,6 +482,14 @@ class EargrapeApp:
                 self.status_var.set(f"Audio warning: {message}")
             elif kind == "error":
                 self.status_var.set(f"Error: {message}")
+            elif kind == "hotkey_captured":
+                self._capturing_hotkey = False
+                self.hotkey_var.set(message)
+                self.update_button_state()
+            elif kind == "hotkey_capture_error":
+                self._capturing_hotkey = False
+                self.update_button_state()
+                messagebox.showerror("Eargrape", f"Hotkey capture failed.\n\n{message}")
 
         self.update_button_state()
         self.root.after(120, self.process_messages)
@@ -475,7 +497,7 @@ class EargrapeApp:
     def update_button_state(self) -> None:
         running = self.engine is not None and self.engine.is_running()
         combo_state = "disabled" if running else "readonly"
-        scalar_state = "disabled" if running else "normal"
+        scalar_state = "disabled" if (running or self._capturing_hotkey) else "normal"
 
         self.start_button.config(state="disabled" if running else "normal")
         self.stop_button.config(state="normal" if running else "disabled")
@@ -490,9 +512,25 @@ class EargrapeApp:
         self.mode_combo.config(state=combo_state)
         self.blocksize_combo.config(state=combo_state)
         self.hotkey_entry.config(state=scalar_state)
+        self.capture_button.config(
+            text="Press key..." if self._capturing_hotkey else "Record",
+            state="disabled" if (running or self._capturing_hotkey) else "normal",
+        )
         self.start_check.config(state=scalar_state)
         self.drive_scale.config(state=scalar_state)
         self.gain_scale.config(state=scalar_state)
+
+    def start_hotkey_capture(self) -> None:
+        self._capturing_hotkey = True
+        self.update_button_state()
+        threading.Thread(target=self._capture_hotkey_thread, daemon=True).start()
+
+    def _capture_hotkey_thread(self) -> None:
+        try:
+            captured = keyboard.read_hotkey(suppress=False)
+            self.message_queue.put(("hotkey_captured", captured))
+        except Exception as exc:
+            self.message_queue.put(("hotkey_capture_error", str(exc)))
 
     def on_close(self) -> None:
         if self.engine is not None:
@@ -508,6 +546,13 @@ def main() -> int:
         style.theme_use("vista")
     except tk.TclError:
         pass
+    icon_path = runtime_base_dir() / "icon.png"
+    if icon_path.exists():
+        try:
+            icon = tk.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, icon)
+        except tk.TclError:
+            pass
     EargrapeApp(root)
     root.mainloop()
     return 0
