@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 import keyboard
@@ -547,7 +549,10 @@ def main() -> int:
         style.theme_use("vista")
     except tk.TclError:
         pass
-    icon_path = runtime_base_dir() / "icon.png"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        icon_path = Path(sys._MEIPASS) / "icon.png"
+    else:
+        icon_path = runtime_base_dir() / "icon.png"
     if icon_path.exists():
         try:
             icon = tk.PhotoImage(file=str(icon_path))
