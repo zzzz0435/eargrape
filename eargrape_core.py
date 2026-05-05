@@ -461,20 +461,35 @@ def list_devices_text() -> str:
 
 class EargrapeRouter:
     def __init__(self, config: AppConfig) -> None:
-        self.config = config
-        self.effect_enabled = config.start_enabled
-        self.lock = threading.Lock()
+        # threading.Event.is_set() reads a plain bool without acquiring a lock,
+        # making it faster than Lock in the audio callback hot path.
+        self._effect_event = threading.Event()
+        if config.start_enabled:
+            self._effect_event.set()
         self.last_status: str | None = None
-        self.soft_clip_normalizer = 1.0 / np.tanh(config.drive)
+
+        # Cache config values used every callback to avoid attribute chain lookups.
+        self._noise_gate = config.noise_gate
+        self._mix = config.mix
+        self._dry = 1.0 - config.mix
+        self._post_gain = config.post_gain
+        self._drive = float(config.drive)
+        self._hard_clip = config.distortion_mode == "hard_clip"
+        self._soft_clip_normalizer = 1.0 / np.tanh(config.drive)
+
+        # Pre-allocated buffers — reused every callback to avoid heap allocation.
+        self._buf_wet = np.zeros(config.blocksize, dtype=np.float32)
+        self._buf_out = np.zeros(config.blocksize, dtype=np.float32)
 
     def toggle(self) -> bool:
-        with self.lock:
-            self.effect_enabled = not self.effect_enabled
-            return self.effect_enabled
+        if self._effect_event.is_set():
+            self._effect_event.clear()
+            return False
+        self._effect_event.set()
+        return True
 
     def is_enabled(self) -> bool:
-        with self.lock:
-            return self.effect_enabled
+        return self._effect_event.is_set()
 
     def callback(
         self,
@@ -489,29 +504,35 @@ class EargrapeRouter:
         if status:
             self.last_status = str(status)
 
-        if indata.shape[1] == 1:
-            mono = indata[:, 0]
+        mono = indata[:, 0] if indata.shape[1] == 1 else np.mean(indata, axis=1, dtype=np.float32)
+
+        if self._noise_gate > 0.0:
+            np.copyto(self._buf_out, mono)
+            self._buf_out[np.abs(self._buf_out) < self._noise_gate] = 0.0
+            mono = self._buf_out
+
+        if self._effect_event.is_set():
+            self._distort(mono, self._buf_wet)
+            if self._mix == 1.0:
+                np.multiply(self._buf_wet, self._post_gain, out=self._buf_out)
+            else:
+                np.multiply(mono, self._dry, out=self._buf_out)
+                np.multiply(self._buf_wet, self._mix, out=self._buf_wet)
+                np.add(self._buf_out, self._buf_wet, out=self._buf_out)
+                np.multiply(self._buf_out, self._post_gain, out=self._buf_out)
+            np.clip(self._buf_out, -1.0, 1.0, out=self._buf_out)
         else:
-            mono = np.mean(indata, axis=1, dtype=np.float32)
+            np.clip(mono, -1.0, 1.0, out=self._buf_out)
 
-        if self.config.noise_gate > 0.0:
-            mono = mono.copy()
-            mono[np.abs(mono) < self.config.noise_gate] = 0.0
+        outdata[:] = self._buf_out[:, None]
 
-        if self.is_enabled():
-            wet = self.apply_distortion(mono)
-            processed = (mono * (1.0 - self.config.mix)) + (wet * self.config.mix)
-            processed = np.clip(processed * self.config.post_gain, -1.0, 1.0)
+    def _distort(self, mono: np.ndarray, out: np.ndarray) -> None:
+        np.multiply(mono, self._drive, out=out)
+        if self._hard_clip:
+            np.clip(out, -1.0, 1.0, out=out)
         else:
-            processed = np.clip(mono, -1.0, 1.0)
-
-        outdata[:] = processed[:, None]
-
-    def apply_distortion(self, mono: np.ndarray) -> np.ndarray:
-        driven = mono * self.config.drive
-        if self.config.distortion_mode == "hard_clip":
-            return np.clip(driven, -1.0, 1.0)
-        return np.tanh(driven) * self.soft_clip_normalizer
+            np.tanh(out, out=out)
+            np.multiply(out, self._soft_clip_normalizer, out=out)
 
 
 class EargrapeEngine:
@@ -595,6 +616,16 @@ class EargrapeEngine:
             raise error
 
     def _run_stream(self) -> None:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadPriority(
+                    ctypes.windll.kernel32.GetCurrentThread(),
+                    15,  # THREAD_PRIORITY_TIME_CRITICAL
+                )
+            except Exception:
+                pass
+
         runtime = self.runtime
         router = self.router
         if runtime is None or router is None:
