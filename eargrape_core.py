@@ -123,8 +123,6 @@ def runtime_base_dir() -> Path:
             return current_dir
         if (exe_dir / "config.json").exists():
             return exe_dir
-        if current_dir != exe_dir:
-            return current_dir
         return exe_dir
     return Path(__file__).resolve().parent
 
