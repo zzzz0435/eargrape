@@ -6,6 +6,14 @@
 真實麥克風 → Eargrape（失真效果）→ 虛擬音效卡輸入 → Discord / 遊戲讀取虛擬音效卡輸出
 ```
 
+## 前置需求
+
+使用前需先安裝 **VB-CABLE**（免費虛擬音效卡驅動）：
+
+1. 前往 https://vb-audio.com/Cable/ 下載
+2. 解壓縮後右鍵 `VBCABLE_Setup_x64.exe` → **以系統管理員身分執行** → Install Driver
+3. 重新開機
+
 ## 使用方式
 
 啟動 `Eargrape.exe`，在視窗裡設定：
