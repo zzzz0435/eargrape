@@ -1,119 +1,33 @@
 # Eargrape
 
-`Eargrape` is a minimal Windows microphone router for one job only:
+透過快捷鍵即時切換爆麥效果的 Windows 麥克風路由工具。
 
-- capture your mic
-- apply a single nonlinear distortion effect
-- send the result to a target output device
-- toggle the effect with a global hotkey
-- ship as a simple Windows GUI app or a single-file `.exe`
-
-The intended routing is:
-
-`real microphone -> Eargrape -> virtual cable input -> Discord / game reads virtual cable output`
-
-## Why this shape
-
-For voice-chat style use, the simplest practical approach is not to write a virtual microphone driver first. Existing projects like [Figaro](https://github.com/MattMoony/figaro) and [TTS Voice Wizard's virtual cable guide](https://github.com/VRCWizard/TTS-Voice-Wizard/wiki/Virtual-Cable) use the same routing model: process audio in user space and send it into a virtual cable device.
-
-This MVP uses [`sounddevice`](https://github.com/spatialaudio/python-sounddevice), which wraps PortAudio on Windows/Linux/macOS. That keeps the code small while still letting us run a callback-based real-time audio stream.
-
-## Scope
-
-Included:
-
-- one global hotkey
-- one distortion effect
-- low-latency callback routing
-- simple Windows GUI
-- single-file `exe` packaging
-
-Not included:
-
-- extra effects
-- monitoring mix
-- tray icon
-- automatic device switching
-- virtual microphone driver
-
-## Quick start
-
-1. Install Python 3.12+.
-2. Install dependencies:
-
-```powershell
-python -m pip install -r requirements.txt
+```
+真實麥克風 → Eargrape（失真效果）→ 虛擬音效卡輸入 → Discord / 遊戲讀取虛擬音效卡輸出
 ```
 
-3. Install a virtual audio cable. Example: [VB-CABLE](https://vb-audio.com/Cable/).
-4. Start the GUI:
+## 使用方式
 
-```powershell
-python eargrape_gui.py
-```
+啟動 `Eargrape.exe`，在視窗裡設定：
 
-5. In the window:
-   - choose your real microphone as `Input mic`
-   - choose your virtual cable playback side as `Output target`, usually `CABLE Input`
-   - keep `Host API` on `Windows WASAPI` if possible
-   - choose a hotkey such as `F8`
-   - press `Validate`, then `Start`
-6. In Discord or your game, set the microphone/input device to the virtual cable recording side, usually `CABLE Output`.
+| 欄位 | 說明 |
+|------|------|
+| Input mic | 選你的真實麥克風 |
+| Output target | 選 `CABLE Input`（虛擬音效卡輸入端） |
+| Host API | 保持 `Windows WASAPI` |
+| Hotkey | 點「Record」後按下想要的快捷鍵，或直接手打（例如 `f8`） |
+| Distortion | `soft_clip` 較圓潤，`hard_clip` 較破碎刺耳 |
+| Drive | 失真強度，數字越大越爆 |
+| Output gain | 失真後的音量補償 |
+| Block size | 延遲緩衝，128 為預設值 |
 
-## CLI tools
+設定完成後按 **Validate** 確認，再按 **Start** 開始路由。
 
-Useful for troubleshooting:
-
-```powershell
-python eargrape.py --list-devices
-python eargrape.py --validate-config
-```
-
-## Build EXE
-
-This repository includes a PyInstaller build script and already produced one local build at [dist/Eargrape.exe](/C:/Users/ITRI/Desktop/eargrape/dist/Eargrape.exe).
-
-To rebuild:
-
-```powershell
-.\build.ps1
-```
-
-The result is a single-file GUI executable:
-
-```text
-dist\Eargrape.exe
-```
-
-The app stores `config.json` next to the executable when running as a packaged build. That keeps the setup friendlier for self-use or sharing with a few friends.
-
-## Manual setup
-
-If you want to inspect devices before using the GUI:
-
-```powershell
-python eargrape.py --list-devices
-```
-
-Then edit [config.json](C:/Users/ITRI/Desktop/eargrape/config.json) and set:
-   - `input_device` to your microphone name or index
-   - `output_device` to your virtual cable playback side, usually `CABLE Input`
-   - `hostapi` to `Windows WASAPI`
-Validate the config before streaming:
-
-```powershell
-python eargrape.py --validate-config
-```
-
-Start Eargrape from CLI:
-
-```powershell
-python eargrape.py
-```
+在 Discord 或遊戲裡，把麥克風輸入改成 `CABLE Output`，之後按快捷鍵即可切換爆麥效果。
 
 ## Config
 
-Default [config.json](C:/Users/ITRI/Desktop/eargrape/config.json):
+設定存在 `config.json`（位於 `Eargrape.exe` 旁邊），也可以直接編輯：
 
 ```json
 {
@@ -134,44 +48,21 @@ Default [config.json](C:/Users/ITRI/Desktop/eargrape/config.json):
 }
 ```
 
-Notes:
+- `input_device`：`null` 表示自動選擇預設裝置，也可填裝置名稱或 index
+- `blocksize`：越小延遲越低但越不穩定，有雜音就改 `256`
+- `exclusive_wasapi`：獨佔模式可降低延遲，但其他 app 無法同時使用該裝置
+- `start_enabled`：`true` 表示啟動時效果預設開啟
 
-- `input_device`: `null` means "best default match under the selected host API".
-- `output_device`: string match or numeric index.
-- `blocksize`: smaller is lower latency but less stable. Start with `128`. If it crackles, move to `256`.
-- `exclusive_wasapi`: can reduce latency, but shared mode is safer for the first pass.
-- `distortion_mode`: `soft_clip` is smoother, `hard_clip` is harsher.
-- `drive`: higher means more breakup.
-- `post_gain`: trims the distorted signal back down after clipping.
-- `mix`: `1.0` means fully wet.
+## 降低延遲
 
-## Tuning for low latency
+- 兩個裝置都使用 `Windows WASAPI`
+- `samplerate` 保持 `48000`
+- `blocksize` 從 `128` 開始，穩定的話可試 `64`，有問題就改 `256`
 
-- Keep both devices on `Windows WASAPI`.
-- Prefer `48000` Hz unless your devices clearly want something else.
-- Use the same host API for both input and output.
-- Start with `blocksize = 128`.
-- If stable, try `64`.
-- If unstable, go up to `256`.
+## 疑難排解
 
-## Limitations
-
-- This version outputs mono voice duplicated across the target output channels.
-- It assumes the target app will read from a virtual cable device.
-- The packaged GUI app is convenient, but because it is built from Python it is not as small as a native C++ utility.
-- It has not been end-to-end tested in this repository because the current machine shows no input-capable audio device in `sounddevice`.
-
-## Troubleshooting
-
-- If `--list-devices` shows outputs only and no microphone inputs, first check Windows microphone privacy permissions.
-- If the virtual cable does not appear, reinstall it and run `python eargrape.py --list-devices` again.
-- If audio crackles, raise `blocksize` from `128` to `256`.
-- If the hotkey collides with another app, change `hotkey` in [config.json](C:/Users/ITRI/Desktop/eargrape/config.json).
-- If the packaged `exe` cannot find your settings, check for `config.json` next to `Eargrape.exe`.
-
-## References
-
-- [Figaro](https://github.com/MattMoony/figaro)
-- [TTS Voice Wizard virtual cable guide](https://github.com/VRCWizard/TTS-Voice-Wizard/wiki/Virtual-Cable)
-- [python-sounddevice](https://github.com/spatialaudio/python-sounddevice)
-- [miniaudio](https://github.com/mackron/miniaudio)
+- 麥克風沒出現在清單 → 檢查 Windows 麥克風隱私權設定
+- 虛擬音效卡沒出現 → 重新安裝 VB-CABLE 驅動後重整裝置清單
+- 聲音有雜音或斷音 → 把 `blocksize` 改成 `256`
+- 快捷鍵和其他程式衝突 → 在 GUI 重新錄製或直接修改 `config.json`
+- exe 找不到設定 → 確認 `config.json` 在 `Eargrape.exe` 旁邊
