@@ -1,0 +1,112 @@
+name: Build And Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+      prerelease:
+        description: "Mark this release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+            $prerelease = "${{ inputs.prerelease }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+            $prerelease = "false"
+          }
+
+          $assetName = "Eargrape-$tag-windows-x64.exe"
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "asset_name=$assetName" >> $env:GITHUB_OUTPUT
+          "prerelease=$prerelease" >> $env:GITHUB_OUTPUT
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean eargrape.spec
+
+      - name: Prepare release asset
+        shell: pwsh
+        run: |
+          $source = Join-Path $PWD "dist\\Eargrape.exe"
+          $target = Join-Path $PWD "dist\\${{ steps.meta.outputs.asset_name }}"
+
+          if (-not (Test-Path $source)) {
+            throw "Build output not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $assetPath = Join-Path $PWD "dist\\${{ steps.meta.outputs.asset_name }}"
+          $notesFile = Join-Path $PWD "release-notes.txt"
+          $releaseExists = $true
+
+          @"
+          Automated build for $tag.
+
+          Asset:
+          - ${{ steps.meta.outputs.asset_name }}
+          "@ | Set-Content -Path $notesFile -Encoding utf8
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $releaseExists = $false
+          }
+
+          if (-not $releaseExists) {
+            $args = @(
+              "release", "create", $tag, $assetPath,
+              "--title", $tag,
+              "--notes-file", $notesFile,
+              "--target", "${{ github.sha }}"
+            )
+
+            if ("${{ steps.meta.outputs.prerelease }}" -eq "true") {
+              $args += "--prerelease"
+            }
+
+            gh @args
+          } else {
+            gh release upload $tag $assetPath --clobber
+          }
