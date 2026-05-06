@@ -409,14 +409,17 @@ class EargrapeApp:
             return
 
         self.status_var.set(
-            f"Valid | [{runtime.input_device.index}] -> [{runtime.output_device.index}]"
+            f"Valid | [{runtime.input_device.index}] -> [{runtime.output_device.index}] | {runtime.input_device.hostapi}"
         )
+        note_suffix = f"\nMode:   {runtime.note}" if runtime.note else ""
         messagebox.showinfo(
             "Eargrape",
             (
                 "Validation succeeded.\n\n"
+                f"Host:   {runtime.input_device.hostapi}\n"
                 f"Input:  [{runtime.input_device.index}] {runtime.input_device.name}\n"
                 f"Output: [{runtime.output_device.index}] {runtime.output_device.name}"
+                f"{note_suffix}"
             ),
         )
 

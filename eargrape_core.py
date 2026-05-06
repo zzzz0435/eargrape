@@ -79,6 +79,9 @@ class ResolvedRuntime:
     output_device: DeviceInfo
     output_channels: int
     extra_settings: tuple[Any, Any] | None
+    stream_latency: str | float
+    prime_output_buffers: bool
+    note: str | None = None
 
 
 def runtime_base_dir() -> Path:
@@ -351,6 +354,36 @@ def choose_output_channels(device: DeviceInfo) -> int:
     raise ConfigError(f"Output device has no output channels: {device.name}")
 
 
+def vb_route_signature(device: DeviceInfo) -> str | None:
+    normalized = normalize_text(device.name)
+    if "vb-audio" not in normalized:
+        return None
+
+    for prefix, replacement in (
+        ("cable output", "cable"),
+        ("cable input", "cable"),
+        ("output", ""),
+        ("input", ""),
+    ):
+        if normalized.startswith(prefix):
+            normalized = replacement + normalized[len(prefix) :]
+            break
+
+    return normalized.strip()
+
+
+def validate_device_route(input_device: DeviceInfo, output_device: DeviceInfo) -> None:
+    input_signature = vb_route_signature(input_device)
+    output_signature = vb_route_signature(output_device)
+
+    if input_signature and input_signature == output_signature:
+        raise ConfigError(
+            "Input mic and output target are the two ends of the same VB-CABLE.\n\n"
+            "Use a real microphone as Input mic and CABLE Input as Output target.\n"
+            "If you want to process virtual audio, use two different virtual cables."
+        )
+
+
 def wasapi_settings_for(
     config: AppConfig,
     input_device: DeviceInfo,
@@ -387,6 +420,7 @@ def resolve_runtime(config: AppConfig, devices: list[DeviceInfo] | None = None) 
         config.hostapi,
         resolved_devices,
     )
+    validate_device_route(input_device, output_device)
     output_channels = choose_output_channels(output_device)
     extra_settings = wasapi_settings_for(config, input_device, output_device)
     return ResolvedRuntime(
@@ -394,30 +428,215 @@ def resolve_runtime(config: AppConfig, devices: list[DeviceInfo] | None = None) 
         output_device=output_device,
         output_channels=output_channels,
         extra_settings=extra_settings,
+        stream_latency=config.latency,
+        prime_output_buffers=True,
     )
 
 
-def validate_runtime(config: AppConfig, runtime: ResolvedRuntime | None = None) -> ResolvedRuntime:
-    resolved_runtime = runtime or resolve_runtime(config)
+def clone_runtime(
+    runtime: ResolvedRuntime,
+    *,
+    extra_settings: tuple[Any, Any] | None | object = ...,
+    stream_latency: str | float | object = ...,
+    prime_output_buffers: bool | object = ...,
+    note: str | None | object = ...,
+) -> ResolvedRuntime:
+    return ResolvedRuntime(
+        input_device=runtime.input_device,
+        output_device=runtime.output_device,
+        output_channels=runtime.output_channels,
+        extra_settings=runtime.extra_settings if extra_settings is ... else extra_settings,
+        stream_latency=runtime.stream_latency if stream_latency is ... else stream_latency,
+        prime_output_buffers=(
+            runtime.prime_output_buffers
+            if prime_output_buffers is ...
+            else prime_output_buffers
+        ),
+        note=runtime.note if note is ... else note,
+    )
+
+
+def check_runtime_support(config: AppConfig, runtime: ResolvedRuntime) -> None:
     sd.check_input_settings(
-        device=resolved_runtime.input_device.index,
+        device=runtime.input_device.index,
         channels=1,
         dtype="float32",
-        extra_settings=(
-            resolved_runtime.extra_settings[0] if resolved_runtime.extra_settings else None
-        ),
+        extra_settings=(runtime.extra_settings[0] if runtime.extra_settings else None),
         samplerate=config.samplerate,
     )
     sd.check_output_settings(
-        device=resolved_runtime.output_device.index,
-        channels=resolved_runtime.output_channels,
+        device=runtime.output_device.index,
+        channels=runtime.output_channels,
         dtype="float32",
-        extra_settings=(
-            resolved_runtime.extra_settings[1] if resolved_runtime.extra_settings else None
-        ),
+        extra_settings=(runtime.extra_settings[1] if runtime.extra_settings else None),
         samplerate=config.samplerate,
     )
-    return resolved_runtime
+
+
+def _probe_callback(
+    indata: np.ndarray,
+    outdata: np.ndarray,
+    frames: int,
+    time: Any,
+    status: sd.CallbackFlags,
+) -> None:
+    del indata, frames, time, status
+    outdata.fill(0.0)
+
+
+def probe_runtime_stream(config: AppConfig, runtime: ResolvedRuntime) -> None:
+    check_runtime_support(config, runtime)
+    with sd.Stream(
+        samplerate=config.samplerate,
+        blocksize=config.blocksize,
+        device=(runtime.input_device.index, runtime.output_device.index),
+        channels=(1, runtime.output_channels),
+        dtype=("float32", "float32"),
+        latency=runtime.stream_latency,
+        extra_settings=runtime.extra_settings,
+        callback=_probe_callback,
+        clip_off=True,
+        dither_off=True,
+        prime_output_buffers_using_stream_callback=runtime.prime_output_buffers,
+    ):
+        pass
+
+
+def runtime_attempt_key(runtime: ResolvedRuntime) -> tuple[Any, ...]:
+    return (
+        runtime.input_device.index,
+        runtime.output_device.index,
+        runtime.extra_settings is not None,
+        runtime.stream_latency,
+        runtime.prime_output_buffers,
+    )
+
+
+def iter_runtime_candidates(
+    config: AppConfig,
+    runtime: ResolvedRuntime,
+    devices: list[DeviceInfo],
+) -> list[ResolvedRuntime]:
+    candidates: list[ResolvedRuntime] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def add(candidate: ResolvedRuntime) -> None:
+        key = runtime_attempt_key(candidate)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(candidate)
+
+    add(runtime)
+
+    if runtime.extra_settings is not None:
+        add(
+            clone_runtime(
+                runtime,
+                extra_settings=None,
+                prime_output_buffers=False,
+                note="Compatibility mode: WASAPI extras disabled",
+            )
+        )
+
+    if config.latency == "low":
+        add(
+            clone_runtime(
+                runtime,
+                stream_latency="high",
+                prime_output_buffers=False,
+                note="Compatibility mode: high latency",
+            )
+        )
+        if runtime.extra_settings is not None:
+            add(
+                clone_runtime(
+                    runtime,
+                    extra_settings=None,
+                    stream_latency="high",
+                    prime_output_buffers=False,
+                    note="Compatibility mode: WASAPI extras disabled, high latency",
+                )
+            )
+
+    fallback_hostapis = ["Windows DirectSound", "MME"]
+    current_hostapi = runtime.input_device.hostapi.casefold()
+    for hostapi in fallback_hostapis:
+        if hostapi.casefold() == current_hostapi:
+            continue
+
+        alt_data = asdict(config)
+        alt_data["input_device"] = runtime.input_device.name
+        alt_data["output_device"] = runtime.output_device.name
+        alt_data["hostapi"] = hostapi
+
+        try:
+            alt_runtime = resolve_runtime(AppConfig(**alt_data), devices)
+        except ConfigError:
+            continue
+
+        add(
+            clone_runtime(
+                alt_runtime,
+                prime_output_buffers=False,
+                note=f"Compatibility mode: {hostapi}",
+            )
+        )
+
+        if config.latency == "low":
+            add(
+                clone_runtime(
+                    alt_runtime,
+                    stream_latency="high",
+                    prime_output_buffers=False,
+                    note=f"Compatibility mode: {hostapi}, high latency",
+                )
+            )
+
+    return candidates
+
+
+def select_compatible_runtime(
+    config: AppConfig,
+    devices: list[DeviceInfo] | None = None,
+) -> ResolvedRuntime:
+    resolved_devices = devices or enumerate_devices()
+    base_runtime = resolve_runtime(config, resolved_devices)
+    attempts = iter_runtime_candidates(config, base_runtime, resolved_devices)
+    failures: list[str] = []
+    last_error: Exception | None = None
+
+    for candidate in attempts:
+        try:
+            probe_runtime_stream(config, candidate)
+            return candidate
+        except Exception as exc:
+            last_error = exc
+            label = candidate.note or candidate.input_device.hostapi
+            failures.append(label)
+
+    if last_error is None:
+        return base_runtime
+
+    attempted = " -> ".join(failures)
+    details = [
+        str(last_error),
+        "",
+        f"Input: [{base_runtime.input_device.index}] {base_runtime.input_device.name}",
+        f"Output: [{base_runtime.output_device.index}] {base_runtime.output_device.name}",
+        f"Requested host API: {config.hostapi or base_runtime.input_device.hostapi}",
+    ]
+    if attempted:
+        details.append(f"Tried: {attempted}")
+    details.append("Tip: if the mic is USB, Windows DirectSound or MME may be more stable than WASAPI.")
+    raise RuntimeError("\n".join(details)) from last_error
+
+
+def validate_runtime(config: AppConfig, runtime: ResolvedRuntime | None = None) -> ResolvedRuntime:
+    if runtime is not None:
+        probe_runtime_stream(config, runtime)
+        return runtime
+    return select_compatible_runtime(config)
 
 
 def device_display_label(device: DeviceInfo) -> str:
@@ -544,6 +763,7 @@ class EargrapeEngine:
         self.lock = threading.Lock()
         self.router: EargrapeRouter | None = None
         self.runtime: ResolvedRuntime | None = None
+        self.runtime_candidates: list[ResolvedRuntime] = []
         self.stream_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.startup_event = threading.Event()
@@ -574,14 +794,20 @@ class EargrapeEngine:
         return enabled
 
     def validate(self) -> ResolvedRuntime:
-        runtime = resolve_runtime(self.config)
-        return validate_runtime(self.config, runtime)
+        return validate_runtime(self.config)
 
     def start(self) -> None:
         if self.is_running():
             return
 
-        self.runtime = self.validate()
+        resolved_devices = enumerate_devices()
+        base_runtime = resolve_runtime(self.config, resolved_devices)
+        self.runtime_candidates = iter_runtime_candidates(
+            self.config,
+            base_runtime,
+            resolved_devices,
+        )
+        self.runtime = None
         self.router = EargrapeRouter(self.config)
         self.startup_event.clear()
         self.startup_error = None
@@ -624,46 +850,74 @@ class EargrapeEngine:
             except Exception:
                 pass
 
-        runtime = self.runtime
+        runtime_candidates = self.runtime_candidates
         router = self.router
-        if runtime is None or router is None:
+        if not runtime_candidates or router is None:
             self.startup_error = RuntimeError("Audio runtime was not prepared.")
             self.startup_event.set()
             return
 
         try:
-            with sd.Stream(
-                samplerate=self.config.samplerate,
-                blocksize=self.config.blocksize,
-                device=(runtime.input_device.index, runtime.output_device.index),
-                channels=(1, runtime.output_channels),
-                dtype=("float32", "float32"),
-                latency=self.config.latency,
-                extra_settings=runtime.extra_settings,
-                callback=router.callback,
-                clip_off=True,
-                dither_off=True,
-                never_drop_input=True,
-                prime_output_buffers_using_stream_callback=True,
-            ):
-                with self.lock:
-                    self.running = True
-                self._emit(
-                    "engine",
-                    (
-                        f"Running | hotkey={self.config.hotkey} | "
-                        f"input=[{runtime.input_device.index}] {runtime.input_device.name} | "
-                        f"output=[{runtime.output_device.index}] {runtime.output_device.name}"
-                    ),
-                )
-                self._emit("effect", "ON" if router.is_enabled() else "OFF")
-                self.startup_event.set()
+            failures: list[str] = []
+            last_error: Exception | None = None
 
-                while not self.stop_event.wait(0.25):
-                    if router.last_status:
-                        self._emit("audio", router.last_status)
-                        router.last_status = None
+            for runtime in runtime_candidates:
+                try:
+                    with sd.Stream(
+                        samplerate=self.config.samplerate,
+                        blocksize=self.config.blocksize,
+                        device=(runtime.input_device.index, runtime.output_device.index),
+                        channels=(1, runtime.output_channels),
+                        dtype=("float32", "float32"),
+                        latency=runtime.stream_latency,
+                        extra_settings=runtime.extra_settings,
+                        callback=router.callback,
+                        clip_off=True,
+                        dither_off=True,
+                        prime_output_buffers_using_stream_callback=runtime.prime_output_buffers,
+                    ):
+                        self.runtime = runtime
+                        with self.lock:
+                            self.running = True
+                        running_message = (
+                            f"Running | hotkey={self.config.hotkey} | "
+                            f"hostapi={runtime.input_device.hostapi} | "
+                            f"input=[{runtime.input_device.index}] {runtime.input_device.name} | "
+                            f"output=[{runtime.output_device.index}] {runtime.output_device.name}"
+                        )
+                        if runtime.note:
+                            running_message += f" | {runtime.note}"
+                        self._emit("engine", running_message)
+                        self._emit("effect", "ON" if router.is_enabled() else "OFF")
+                        self.startup_event.set()
+
+                        while not self.stop_event.wait(0.25):
+                            if router.last_status:
+                                self._emit("audio", router.last_status)
+                                router.last_status = None
+                        return
+                except Exception as exc:
+                    last_error = exc
+                    failures.append(runtime.note or runtime.input_device.hostapi)
+
+            if last_error is None:
+                raise RuntimeError("No compatible audio stream configuration was found.")
+
+            attempted = " -> ".join(failures)
+            base_runtime = runtime_candidates[0]
+            details = [
+                str(last_error),
+                "",
+                f"Input: [{base_runtime.input_device.index}] {base_runtime.input_device.name}",
+                f"Output: [{base_runtime.output_device.index}] {base_runtime.output_device.name}",
+                f"Requested host API: {self.config.hostapi or base_runtime.input_device.hostapi}",
+            ]
+            if attempted:
+                details.append(f"Tried: {attempted}")
+            details.append("Tip: if the mic is USB, Windows DirectSound or MME may be more stable than WASAPI.")
+            raise RuntimeError("\n".join(details)) from last_error
         except Exception as exc:
+            self.runtime = None
             self.startup_error = exc
             if not self.startup_event.is_set():
                 self.startup_event.set()
@@ -687,3 +941,4 @@ class EargrapeEngine:
             self.running = False
             self.router = None
             self.runtime = None
+            self.runtime_candidates = []
