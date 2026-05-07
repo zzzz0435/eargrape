@@ -31,8 +31,8 @@ class EargrapeApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Eargrape")
-        self.root.geometry("560x420")
-        self.root.minsize(560, 420)
+        self.root.geometry("720x560")
+        self.root.minsize(720, 560)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.config_path = default_config_path()
@@ -57,6 +57,7 @@ class EargrapeApp:
         self.mode_var = tk.StringVar()
         self.blocksize_var = tk.StringVar()
         self.drive_var = tk.DoubleVar()
+        self.mic_gain_var = tk.DoubleVar()
         self.post_gain_var = tk.DoubleVar()
         self.start_enabled_var = tk.BooleanVar()
 
@@ -66,14 +67,14 @@ class EargrapeApp:
         self.root.after(120, self.process_messages)
 
     def build_ui(self) -> None:
-        container = ttk.Frame(self.root, padding=16)
+        container = ttk.Frame(self.root, padding=22)
         container.pack(fill="both", expand=True)
         container.columnconfigure(1, weight=1)
 
         title = ttk.Label(
             container,
             text="Eargrape",
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 18, "bold"),
         )
         title.grid(row=0, column=0, columnspan=3, sticky="w")
 
@@ -168,7 +169,24 @@ class EargrapeApp:
         self.drive_value_label.grid(row=0, column=1, padx=(10, 0))
 
         row += 1
-        self._add_label(container, row, "Output gain")
+        self._add_label(container, row, "Mic boost")
+        mic_gain_frame = ttk.Frame(container)
+        mic_gain_frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        mic_gain_frame.columnconfigure(0, weight=1)
+        self.mic_gain_scale = ttk.Scale(
+            mic_gain_frame,
+            from_=1.0,
+            to=10.0,
+            variable=self.mic_gain_var,
+            orient="horizontal",
+            command=self.on_mic_gain_changed,
+        )
+        self.mic_gain_scale.grid(row=0, column=0, sticky="ew")
+        self.mic_gain_value_label = ttk.Label(mic_gain_frame, width=6, anchor="e")
+        self.mic_gain_value_label.grid(row=0, column=1, padx=(10, 0))
+
+        row += 1
+        self._add_label(container, row, "Effect gain")
         gain_frame = ttk.Frame(container)
         gain_frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
         gain_frame.columnconfigure(0, weight=1)
@@ -242,10 +260,11 @@ class EargrapeApp:
         ttk.Label(
             status_group,
             text=f"Config path: {self.config_path}",
-            wraplength=490,
+            wraplength=650,
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         self.update_drive_label()
+        self.update_mic_gain_label()
         self.update_gain_label()
         self.update_button_state()
 
@@ -269,10 +288,12 @@ class EargrapeApp:
         self.mode_var.set(config.distortion_mode)
         self.blocksize_var.set(str(config.blocksize))
         self.drive_var.set(config.drive)
+        self.mic_gain_var.set(config.mic_gain)
         self.post_gain_var.set(config.post_gain)
         self.start_enabled_var.set(config.start_enabled)
         self.hotkey_status_var.set(config.hotkey)
         self.update_drive_label()
+        self.update_mic_gain_label()
         self.update_gain_label()
 
     def current_device_index(self, direction: str) -> int | None:
@@ -289,6 +310,7 @@ class EargrapeApp:
         data["distortion_mode"] = self.mode_var.get().strip()
         data["blocksize"] = int(self.blocksize_var.get())
         data["drive"] = float(self.drive_var.get())
+        data["mic_gain"] = float(self.mic_gain_var.get())
         data["post_gain"] = float(self.post_gain_var.get())
         data["start_enabled"] = bool(self.start_enabled_var.get())
         return AppConfig(**data)
@@ -381,8 +403,15 @@ class EargrapeApp:
         del value
         self.update_gain_label()
 
+    def on_mic_gain_changed(self, value: str) -> None:
+        del value
+        self.update_mic_gain_label()
+
     def update_drive_label(self) -> None:
         self.drive_value_label.config(text=f"{self.drive_var.get():.1f}")
+
+    def update_mic_gain_label(self) -> None:
+        self.mic_gain_value_label.config(text=f"{self.mic_gain_var.get():.1f}x")
 
     def update_gain_label(self) -> None:
         self.gain_value_label.config(text=f"{self.post_gain_var.get():.2f}")

@@ -27,6 +27,7 @@ DEFAULT_CONFIG_DATA: dict[str, Any] = {
     "start_enabled": False,
     "distortion_mode": "soft_clip",
     "drive": 18.0,
+    "mic_gain": 1.0,
     "post_gain": 0.32,
     "mix": 1.0,
     "noise_gate": 0.0,
@@ -68,6 +69,7 @@ class AppConfig:
     start_enabled: bool
     distortion_mode: str
     drive: float
+    mic_gain: float
     post_gain: float
     mix: float
     noise_gate: float
@@ -163,6 +165,7 @@ def config_from_dict(data: dict[str, Any]) -> AppConfig:
         .strip()
         .lower(),
         drive=float(data.get("drive", DEFAULT_CONFIG_DATA["drive"])),
+        mic_gain=float(data.get("mic_gain", DEFAULT_CONFIG_DATA["mic_gain"])),
         post_gain=float(data.get("post_gain", DEFAULT_CONFIG_DATA["post_gain"])),
         mix=float(data.get("mix", DEFAULT_CONFIG_DATA["mix"])),
         noise_gate=float(data.get("noise_gate", DEFAULT_CONFIG_DATA["noise_gate"])),
@@ -210,6 +213,8 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("distortion_mode must be 'soft_clip' or 'hard_clip'")
     if config.drive <= 0:
         raise ConfigError("drive must be greater than 0")
+    if config.mic_gain <= 0:
+        raise ConfigError("mic_gain must be greater than 0")
     if config.post_gain <= 0:
         raise ConfigError("post_gain must be greater than 0")
     if not 0.0 <= config.mix <= 1.0:
@@ -689,6 +694,7 @@ class EargrapeRouter:
         self._noise_gate = config.noise_gate
         self._mix = config.mix
         self._dry = 1.0 - config.mix
+        self._mic_gain = config.mic_gain
         self._post_gain = config.post_gain
         self._drive = float(config.drive)
         self._hard_clip = config.distortion_mode == "hard_clip"
@@ -737,9 +743,13 @@ class EargrapeRouter:
                 np.multiply(self._buf_wet, self._mix, out=self._buf_wet)
                 np.add(self._buf_out, self._buf_wet, out=self._buf_out)
                 np.multiply(self._buf_out, self._post_gain, out=self._buf_out)
-            np.clip(self._buf_out, -1.0, 1.0, out=self._buf_out)
         else:
-            np.clip(mono, -1.0, 1.0, out=self._buf_out)
+            np.copyto(self._buf_out, mono)
+
+        if self._mic_gain != 1.0:
+            np.multiply(self._buf_out, self._mic_gain, out=self._buf_out)
+
+        np.clip(self._buf_out, -1.0, 1.0, out=self._buf_out)
 
         outdata[:] = self._buf_out[:, None]
 
