@@ -7,11 +7,23 @@
   "latency": "low",
   "exclusive_wasapi": false,
   "hotkey": "f8",
-  "start_enabled": false,
-  "distortion_mode": "soft_clip",
-  "drive": 18.0,
-  "post_gain": 0.32,
-  "mix": 1.0,
-  "noise_gate": 0.0
+  "start_pressed": false,
+  "profile_a": {
+    "name": "普通",
+    "distortion_mode": "soft_clip",
+    "drive": 1.0,
+    "mic_gain": 1.0,
+    "post_gain": 1.0,
+    "mix": 0.0,
+    "noise_gate": 0.0
+  },
+  "profile_b": {
+    "name": "爆麥",
+    "distortion_mode": "soft_clip",
+    "drive": 18.0,
+    "mic_gain": 1.0,
+    "post_gain": 0.32,
+    "mix": 1.0,
+    "noise_gate": 0.0
+  }
 }
-

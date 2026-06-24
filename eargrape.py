@@ -60,6 +60,14 @@ def run() -> int:
         )
         print(f"Sample rate: {config.samplerate}")
         print(f"Block size:  {config.blocksize}")
+        start_name = config.profile_b.name if config.start_pressed else config.profile_a.name
+        print(f"Start profile: {'B' if config.start_pressed else 'A'} {start_name}")
+        for label, profile in (("A", config.profile_a), ("B", config.profile_b)):
+            print(
+                f"Profile {label} [{profile.name}]: mode={profile.distortion_mode} "
+                f"drive={profile.drive} mic_gain={profile.mic_gain} "
+                f"post_gain={profile.post_gain} mix={profile.mix} gate={profile.noise_gate}"
+            )
         return 0
 
     stop_event = threading.Event()
@@ -67,8 +75,8 @@ def run() -> int:
     def handle_status(kind: str, message: str) -> None:
         if kind == "error":
             print(f"[ERROR] {message}", file=sys.stderr)
-        elif kind == "effect":
-            print(f"[HOTKEY] distortion {message}")
+        elif kind == "profile":
+            print(f"[HOTKEY] profile -> {message}")
         elif kind == "audio":
             print(f"[AUDIO] {message}")
         else:

@@ -10,10 +10,12 @@ from tkinter import messagebox, ttk
 import keyboard
 
 from eargrape_core import (
+    DEFAULT_CONFIG_DATA,
     AppConfig,
     DeviceInfo,
     EargrapeEngine,
     available_hostapis,
+    config_from_dict,
     config_to_dict,
     create_default_config,
     default_config_path,
@@ -47,7 +49,7 @@ class EargrapeApp:
         self._capturing_hotkey = False
 
         self.status_var = tk.StringVar(value="Idle")
-        self.effect_var = tk.StringVar(value="OFF")
+        self.effect_var = tk.StringVar(value="普通")
         self.hotkey_status_var = tk.StringVar(value="-")
 
         self.hostapi_var = tk.StringVar()
@@ -59,7 +61,11 @@ class EargrapeApp:
         self.drive_var = tk.DoubleVar()
         self.mic_gain_var = tk.DoubleVar()
         self.post_gain_var = tk.DoubleVar()
-        self.start_enabled_var = tk.BooleanVar()
+        self.start_pressed_var = tk.BooleanVar()
+        self.edit_target_var = tk.StringVar(value="a")
+        self.edit_profile = "a"
+        self.profile_a_data: dict = dict(DEFAULT_CONFIG_DATA["profile_a"])
+        self.profile_b_data: dict = dict(DEFAULT_CONFIG_DATA["profile_b"])
 
         self.build_ui()
         self.load_initial_config()
@@ -135,6 +141,27 @@ class EargrapeApp:
         self.capture_button.grid(row=0, column=1, padx=(8, 0))
 
         row += 1
+        self._add_label(container, row, "編輯中")
+        edit_frame = ttk.Frame(container)
+        edit_frame.grid(row=row, column=1, columnspan=2, sticky="w", pady=4)
+        self.edit_a_radio = ttk.Radiobutton(
+            edit_frame,
+            text="A 普通",
+            value="a",
+            variable=self.edit_target_var,
+            command=self.on_edit_target_changed,
+        )
+        self.edit_a_radio.grid(row=0, column=0, padx=(0, 16))
+        self.edit_b_radio = ttk.Radiobutton(
+            edit_frame,
+            text="B 爆麥",
+            value="b",
+            variable=self.edit_target_var,
+            command=self.on_edit_target_changed,
+        )
+        self.edit_b_radio.grid(row=0, column=1)
+
+        row += 1
         self._add_label(container, row, "Distortion")
         self.mode_combo = ttk.Combobox(
             container,
@@ -146,8 +173,8 @@ class EargrapeApp:
 
         self.start_check = ttk.Checkbutton(
             container,
-            text="Start effect ON",
-            variable=self.start_enabled_var,
+            text="啟動時用 B(爆麥)",
+            variable=self.start_pressed_var,
         )
         self.start_check.grid(row=row, column=2, sticky="w", padx=(12, 0))
 
@@ -251,7 +278,7 @@ class EargrapeApp:
         ttk.Label(status_group, text="Engine").grid(row=0, column=0, sticky="w")
         ttk.Label(status_group, textvariable=self.status_var).grid(row=0, column=1, sticky="w")
 
-        ttk.Label(status_group, text="Effect").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(status_group, text="Live").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Label(status_group, textvariable=self.effect_var).grid(row=1, column=1, sticky="w", pady=(8, 0))
 
         ttk.Label(status_group, text="Hotkey").grid(row=2, column=0, sticky="w", pady=(8, 0))
@@ -285,16 +312,42 @@ class EargrapeApp:
         self.preferred_output_spec = config.output_device
         self.hostapi_var.set(config.hostapi or "")
         self.hotkey_var.set(config.hotkey)
-        self.mode_var.set(config.distortion_mode)
         self.blocksize_var.set(str(config.blocksize))
-        self.drive_var.set(config.drive)
-        self.mic_gain_var.set(config.mic_gain)
-        self.post_gain_var.set(config.post_gain)
-        self.start_enabled_var.set(config.start_enabled)
+        self.start_pressed_var.set(config.start_pressed)
         self.hotkey_status_var.set(config.hotkey)
+
+        config_data = config_to_dict(config)
+        self.profile_a_data = config_data["profile_a"]
+        self.profile_b_data = config_data["profile_b"]
+        self.edit_profile = "a"
+        self.edit_target_var.set("a")
+        self._load_profile_into_sliders("a")
+
+    def _load_profile_into_sliders(self, which: str) -> None:
+        data = self.profile_a_data if which == "a" else self.profile_b_data
+        self.mode_var.set(data["distortion_mode"])
+        self.drive_var.set(data["drive"])
+        self.mic_gain_var.set(data["mic_gain"])
+        self.post_gain_var.set(data["post_gain"])
         self.update_drive_label()
         self.update_mic_gain_label()
         self.update_gain_label()
+
+    def _capture_sliders_into_profile(self, which: str) -> None:
+        data = self.profile_a_data if which == "a" else self.profile_b_data
+        # 只覆寫 GUI 有露出的欄位；name / mix / noise_gate 保留。
+        data["distortion_mode"] = self.mode_var.get().strip()
+        data["drive"] = float(self.drive_var.get())
+        data["mic_gain"] = float(self.mic_gain_var.get())
+        data["post_gain"] = float(self.post_gain_var.get())
+
+    def on_edit_target_changed(self) -> None:
+        target = self.edit_target_var.get()
+        if target == self.edit_profile:
+            return
+        self._capture_sliders_into_profile(self.edit_profile)
+        self.edit_profile = target
+        self._load_profile_into_sliders(target)
 
     def current_device_index(self, direction: str) -> int | None:
         mapping = self.input_device_map if direction == "input" else self.output_device_map
@@ -302,18 +355,17 @@ class EargrapeApp:
         return mapping.get(value)
 
     def build_config_from_form(self) -> AppConfig:
-        data = config_to_dict(create_default_config())
+        self._capture_sliders_into_profile(self.edit_profile)
+        data = dict(DEFAULT_CONFIG_DATA)
         data["input_device"] = self.current_device_index("input")
         data["output_device"] = self.current_device_index("output")
         data["hostapi"] = self.hostapi_var.get() or None
         data["hotkey"] = self.hotkey_var.get().strip()
-        data["distortion_mode"] = self.mode_var.get().strip()
         data["blocksize"] = int(self.blocksize_var.get())
-        data["drive"] = float(self.drive_var.get())
-        data["mic_gain"] = float(self.mic_gain_var.get())
-        data["post_gain"] = float(self.post_gain_var.get())
-        data["start_enabled"] = bool(self.start_enabled_var.get())
-        return AppConfig(**data)
+        data["start_pressed"] = bool(self.start_pressed_var.get())
+        data["profile_a"] = dict(self.profile_a_data)
+        data["profile_b"] = dict(self.profile_b_data)
+        return config_from_dict(data)
 
     def refresh_devices(self, preserve_selection: bool = True) -> None:
         previous_input = (
@@ -479,7 +531,7 @@ class EargrapeApp:
             self.engine.stop()
             self.engine = None
         self.status_var.set("Stopped")
-        self.effect_var.set("OFF")
+        self.effect_var.set(self.profile_a_data["name"])
         self.update_button_state()
 
     def toggle_effect(self) -> None:
@@ -488,12 +540,12 @@ class EargrapeApp:
             return
 
         try:
-            enabled = self.engine.toggle_effect()
+            name = self.engine.toggle_profile()
         except Exception as exc:
             messagebox.showerror("Eargrape", str(exc))
             return
 
-        self.effect_var.set("ON" if enabled else "OFF")
+        self.effect_var.set(name)
 
     def enqueue_message(self, kind: str, message: str) -> None:
         self.message_queue.put((kind, message))
@@ -508,9 +560,9 @@ class EargrapeApp:
             if kind == "engine":
                 self.status_var.set(message)
                 if message == "Stopped":
-                    self.effect_var.set("OFF")
+                    self.effect_var.set(self.profile_a_data["name"])
                     self.update_button_state()
-            elif kind == "effect":
+            elif kind == "profile":
                 self.effect_var.set(message)
             elif kind == "audio":
                 self.status_var.set(f"Audio warning: {message}")
@@ -552,7 +604,10 @@ class EargrapeApp:
             state="disabled" if (running or self._capturing_hotkey) else "normal",
         )
         self.start_check.config(state=scalar_state)
+        self.edit_a_radio.config(state=scalar_state)
+        self.edit_b_radio.config(state=scalar_state)
         self.drive_scale.config(state=scalar_state)
+        self.mic_gain_scale.config(state=scalar_state)
         self.gain_scale.config(state=scalar_state)
 
     def start_hotkey_capture(self) -> None:

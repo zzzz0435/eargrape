@@ -15,6 +15,26 @@ import sounddevice as sd
 
 StatusCallback = Callable[[str, str], None]
 
+DEFAULT_PROFILE_A: dict[str, Any] = {
+    "name": "普通",
+    "distortion_mode": "soft_clip",
+    "drive": 1.0,
+    "mic_gain": 1.0,
+    "post_gain": 1.0,
+    "mix": 0.0,
+    "noise_gate": 0.0,
+}
+
+DEFAULT_PROFILE_B: dict[str, Any] = {
+    "name": "爆麥",
+    "distortion_mode": "soft_clip",
+    "drive": 18.0,
+    "mic_gain": 1.0,
+    "post_gain": 0.32,
+    "mix": 1.0,
+    "noise_gate": 0.0,
+}
+
 DEFAULT_CONFIG_DATA: dict[str, Any] = {
     "input_device": None,
     "output_device": "CABLE Input",
@@ -24,13 +44,9 @@ DEFAULT_CONFIG_DATA: dict[str, Any] = {
     "latency": "low",
     "exclusive_wasapi": False,
     "hotkey": "f8",
-    "start_enabled": False,
-    "distortion_mode": "soft_clip",
-    "drive": 18.0,
-    "mic_gain": 1.0,
-    "post_gain": 0.32,
-    "mix": 1.0,
-    "noise_gate": 0.0,
+    "start_pressed": False,
+    "profile_a": DEFAULT_PROFILE_A,
+    "profile_b": DEFAULT_PROFILE_B,
 }
 
 
@@ -57,6 +73,34 @@ class DeviceInfo:
 
 
 @dataclass(slots=True)
+class EffectProfile:
+    name: str
+    distortion_mode: str
+    drive: float
+    mic_gain: float
+    post_gain: float
+    mix: float
+    noise_gate: float
+
+
+def validate_profile(profile: EffectProfile) -> None:
+    if not profile.name.strip():
+        raise ConfigError("profile name cannot be empty")
+    if profile.distortion_mode not in {"soft_clip", "hard_clip"}:
+        raise ConfigError("distortion_mode must be 'soft_clip' or 'hard_clip'")
+    if profile.drive <= 0:
+        raise ConfigError("drive must be greater than 0")
+    if profile.mic_gain <= 0:
+        raise ConfigError("mic_gain must be greater than 0")
+    if profile.post_gain <= 0:
+        raise ConfigError("post_gain must be greater than 0")
+    if not 0.0 <= profile.mix <= 1.0:
+        raise ConfigError("mix must be between 0.0 and 1.0")
+    if profile.noise_gate < 0.0:
+        raise ConfigError("noise_gate must be greater than or equal to 0.0")
+
+
+@dataclass(slots=True)
 class AppConfig:
     input_device: str | int | None
     output_device: str | int | None
@@ -66,13 +110,9 @@ class AppConfig:
     latency: str | float
     exclusive_wasapi: bool
     hotkey: str
-    start_enabled: bool
-    distortion_mode: str
-    drive: float
-    mic_gain: float
-    post_gain: float
-    mix: float
-    noise_gate: float
+    start_pressed: bool
+    profile_a: EffectProfile
+    profile_b: EffectProfile
 
 
 @dataclass(slots=True)
@@ -144,7 +184,60 @@ def create_default_config() -> AppConfig:
     return config_from_dict(default_config_data())
 
 
+def profile_from_dict(data: dict[str, Any], defaults: dict[str, Any]) -> EffectProfile:
+    profile = EffectProfile(
+        name=str(data.get("name", defaults["name"])),
+        distortion_mode=str(
+            data.get("distortion_mode", defaults["distortion_mode"])
+        ).strip().lower(),
+        drive=float(data.get("drive", defaults["drive"])),
+        mic_gain=float(data.get("mic_gain", defaults["mic_gain"])),
+        post_gain=float(data.get("post_gain", defaults["post_gain"])),
+        mix=float(data.get("mix", defaults["mix"])),
+        noise_gate=float(data.get("noise_gate", defaults["noise_gate"])),
+    )
+    validate_profile(profile)
+    return profile
+
+
 def config_from_dict(data: dict[str, Any]) -> AppConfig:
+    if "profile_a" in data or "profile_b" in data:
+        profile_a = profile_from_dict(data.get("profile_a", {}), DEFAULT_PROFILE_A)
+        profile_b = profile_from_dict(data.get("profile_b", {}), DEFAULT_PROFILE_B)
+        start_pressed = bool(data.get("start_pressed", DEFAULT_CONFIG_DATA["start_pressed"]))
+    else:
+        # 舊扁平格式 → 遷移：B 沿用舊效果，A 為乾淨但保留舊 mic boost。
+        legacy_mic_gain = float(data.get("mic_gain", 1.0))
+        legacy_mode = str(
+            data.get("distortion_mode", DEFAULT_PROFILE_B["distortion_mode"])
+        ).strip().lower()
+        legacy_noise_gate = float(data.get("noise_gate", 0.0))
+        profile_b = profile_from_dict(
+            {
+                "name": DEFAULT_PROFILE_B["name"],
+                "distortion_mode": legacy_mode,
+                "drive": data.get("drive", DEFAULT_PROFILE_B["drive"]),
+                "mic_gain": legacy_mic_gain,
+                "post_gain": data.get("post_gain", DEFAULT_PROFILE_B["post_gain"]),
+                "mix": data.get("mix", DEFAULT_PROFILE_B["mix"]),
+                "noise_gate": legacy_noise_gate,
+            },
+            DEFAULT_PROFILE_B,
+        )
+        profile_a = profile_from_dict(
+            {
+                "name": DEFAULT_PROFILE_A["name"],
+                "distortion_mode": legacy_mode,
+                "drive": 1.0,
+                "mic_gain": legacy_mic_gain,
+                "post_gain": 1.0,
+                "mix": 0.0,
+                "noise_gate": legacy_noise_gate,
+            },
+            DEFAULT_PROFILE_A,
+        )
+        start_pressed = bool(data.get("start_enabled", False))
+
     config = AppConfig(
         input_device=data.get("input_device"),
         output_device=data.get("output_device", DEFAULT_CONFIG_DATA["output_device"]),
@@ -156,19 +249,9 @@ def config_from_dict(data: dict[str, Any]) -> AppConfig:
             data.get("exclusive_wasapi", DEFAULT_CONFIG_DATA["exclusive_wasapi"])
         ),
         hotkey=str(data.get("hotkey", DEFAULT_CONFIG_DATA["hotkey"])),
-        start_enabled=bool(
-            data.get("start_enabled", DEFAULT_CONFIG_DATA["start_enabled"])
-        ),
-        distortion_mode=str(
-            data.get("distortion_mode", DEFAULT_CONFIG_DATA["distortion_mode"])
-        )
-        .strip()
-        .lower(),
-        drive=float(data.get("drive", DEFAULT_CONFIG_DATA["drive"])),
-        mic_gain=float(data.get("mic_gain", DEFAULT_CONFIG_DATA["mic_gain"])),
-        post_gain=float(data.get("post_gain", DEFAULT_CONFIG_DATA["post_gain"])),
-        mix=float(data.get("mix", DEFAULT_CONFIG_DATA["mix"])),
-        noise_gate=float(data.get("noise_gate", DEFAULT_CONFIG_DATA["noise_gate"])),
+        start_pressed=start_pressed,
+        profile_a=profile_a,
+        profile_b=profile_b,
     )
     validate_config(config)
     return config
@@ -209,18 +292,6 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("blocksize must be greater than 0")
     if config.samplerate <= 0:
         raise ConfigError("samplerate must be greater than 0")
-    if config.distortion_mode not in {"soft_clip", "hard_clip"}:
-        raise ConfigError("distortion_mode must be 'soft_clip' or 'hard_clip'")
-    if config.drive <= 0:
-        raise ConfigError("drive must be greater than 0")
-    if config.mic_gain <= 0:
-        raise ConfigError("mic_gain must be greater than 0")
-    if config.post_gain <= 0:
-        raise ConfigError("post_gain must be greater than 0")
-    if not 0.0 <= config.mix <= 1.0:
-        raise ConfigError("mix must be between 0.0 and 1.0")
-    if config.noise_gate < 0.0:
-        raise ConfigError("noise_gate must be greater than or equal to 0.0")
     if not config.hotkey.strip():
         raise ConfigError("hotkey cannot be empty")
     for key, value in {
@@ -229,6 +300,8 @@ def validate_config(config: AppConfig) -> None:
     }.items():
         if value is not None and not isinstance(value, (str, int)):
             raise ConfigError(f"{key} must be null, a string, or an integer index")
+    validate_profile(config.profile_a)
+    validate_profile(config.profile_b)
 
 
 def enumerate_devices() -> list[DeviceInfo]:
@@ -681,24 +754,48 @@ def list_devices_text() -> str:
     return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class _ProfileRuntime:
+    noise_gate: float
+    mix: float
+    dry: float
+    mic_gain: float
+    post_gain: float
+    drive: float
+    hard_clip: bool
+    soft_clip_normalizer: float
+    needs_distort: bool
+
+
+def _profile_runtime(profile: EffectProfile) -> _ProfileRuntime:
+    drive = float(profile.drive)
+    return _ProfileRuntime(
+        noise_gate=profile.noise_gate,
+        mix=profile.mix,
+        dry=1.0 - profile.mix,
+        mic_gain=profile.mic_gain,
+        post_gain=profile.post_gain,
+        drive=drive,
+        hard_clip=profile.distortion_mode == "hard_clip",
+        soft_clip_normalizer=1.0 / np.tanh(drive),
+        needs_distort=profile.mix > 0.0,
+    )
+
+
 class EargrapeRouter:
     def __init__(self, config: AppConfig) -> None:
         # threading.Event.is_set() reads a plain bool without acquiring a lock,
         # making it faster than Lock in the audio callback hot path.
         self._effect_event = threading.Event()
-        if config.start_enabled:
+        if config.start_pressed:
             self._effect_event.set()
         self.last_status: str | None = None
 
-        # Cache config values used every callback to avoid attribute chain lookups.
-        self._noise_gate = config.noise_gate
-        self._mix = config.mix
-        self._dry = 1.0 - config.mix
-        self._mic_gain = config.mic_gain
-        self._post_gain = config.post_gain
-        self._drive = float(config.drive)
-        self._hard_clip = config.distortion_mode == "hard_clip"
-        self._soft_clip_normalizer = 1.0 / np.tanh(config.drive)
+        # Pre-compute both A and B runtimes so the hot path never allocates.
+        self._rt_a = _profile_runtime(config.profile_a)
+        self._rt_b = _profile_runtime(config.profile_b)
+        self._name_a = config.profile_a.name
+        self._name_b = config.profile_b.name
 
         # Pre-allocated buffers — reused every callback to avoid heap allocation.
         self._buf_wet = np.zeros(config.blocksize, dtype=np.float32)
@@ -711,8 +808,11 @@ class EargrapeRouter:
         self._effect_event.set()
         return True
 
-    def is_enabled(self) -> bool:
+    def is_b_active(self) -> bool:
         return self._effect_event.is_set()
+
+    def active_profile_name(self) -> str:
+        return self._name_b if self._effect_event.is_set() else self._name_a
 
     def callback(
         self,
@@ -727,39 +827,41 @@ class EargrapeRouter:
         if status:
             self.last_status = str(status)
 
+        p = self._rt_b if self._effect_event.is_set() else self._rt_a
+
         mono = indata[:, 0] if indata.shape[1] == 1 else np.mean(indata, axis=1, dtype=np.float32)
 
-        if self._noise_gate > 0.0:
+        if p.noise_gate > 0.0:
             np.copyto(self._buf_out, mono)
-            self._buf_out[np.abs(self._buf_out) < self._noise_gate] = 0.0
+            self._buf_out[np.abs(self._buf_out) < p.noise_gate] = 0.0
             mono = self._buf_out
 
-        if self._effect_event.is_set():
-            self._distort(mono, self._buf_wet)
-            if self._mix == 1.0:
-                np.multiply(self._buf_wet, self._post_gain, out=self._buf_out)
+        if p.needs_distort:
+            self._distort(mono, self._buf_wet, p)
+            if p.mix == 1.0:
+                np.multiply(self._buf_wet, p.post_gain, out=self._buf_out)
             else:
-                np.multiply(mono, self._dry, out=self._buf_out)
-                np.multiply(self._buf_wet, self._mix, out=self._buf_wet)
+                np.multiply(mono, p.dry, out=self._buf_out)
+                np.multiply(self._buf_wet, p.mix, out=self._buf_wet)
                 np.add(self._buf_out, self._buf_wet, out=self._buf_out)
-                np.multiply(self._buf_out, self._post_gain, out=self._buf_out)
+                np.multiply(self._buf_out, p.post_gain, out=self._buf_out)
         else:
-            np.copyto(self._buf_out, mono)
+            np.multiply(mono, p.post_gain, out=self._buf_out)
 
-        if self._mic_gain != 1.0:
-            np.multiply(self._buf_out, self._mic_gain, out=self._buf_out)
+        if p.mic_gain != 1.0:
+            np.multiply(self._buf_out, p.mic_gain, out=self._buf_out)
 
         np.clip(self._buf_out, -1.0, 1.0, out=self._buf_out)
 
         outdata[:] = self._buf_out[:, None]
 
-    def _distort(self, mono: np.ndarray, out: np.ndarray) -> None:
-        np.multiply(mono, self._drive, out=out)
-        if self._hard_clip:
+    def _distort(self, mono: np.ndarray, out: np.ndarray, p: _ProfileRuntime) -> None:
+        np.multiply(mono, p.drive, out=out)
+        if p.hard_clip:
             np.clip(out, -1.0, 1.0, out=out)
         else:
             np.tanh(out, out=out)
-            np.multiply(out, self._soft_clip_normalizer, out=out)
+            np.multiply(out, p.soft_clip_normalizer, out=out)
 
 
 class EargrapeEngine:
@@ -789,19 +891,24 @@ class EargrapeEngine:
         with self.lock:
             return self.running
 
-    def is_effect_enabled(self) -> bool:
+    def active_profile_name(self) -> str:
         with self.lock:
             if self.router is None:
-                return self.config.start_enabled
-            return self.router.is_enabled()
+                return (
+                    self.config.profile_b.name
+                    if self.config.start_pressed
+                    else self.config.profile_a.name
+                )
+            return self.router.active_profile_name()
 
-    def toggle_effect(self) -> bool:
+    def toggle_profile(self) -> str:
         with self.lock:
             if self.router is None:
                 raise RuntimeError("Engine is not running.")
-            enabled = self.router.toggle()
-        self._emit("effect", "ON" if enabled else "OFF")
-        return enabled
+            self.router.toggle()
+            name = self.router.active_profile_name()
+        self._emit("profile", name)
+        return name
 
     def validate(self) -> ResolvedRuntime:
         return validate_runtime(self.config)
@@ -826,7 +933,7 @@ class EargrapeEngine:
         try:
             self.hotkey_handle = keyboard.add_hotkey(
                 self.config.hotkey,
-                self.toggle_effect,
+                self.toggle_profile,
                 suppress=False,
             )
         except Exception:
@@ -898,7 +1005,7 @@ class EargrapeEngine:
                         if runtime.note:
                             running_message += f" | {runtime.note}"
                         self._emit("engine", running_message)
-                        self._emit("effect", "ON" if router.is_enabled() else "OFF")
+                        self._emit("profile", router.active_profile_name())
                         self.startup_event.set()
 
                         while not self.stop_event.wait(0.25):
